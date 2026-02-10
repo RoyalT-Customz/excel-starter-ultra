@@ -9,36 +9,17 @@ const db = require('../db/sqlite');
 
 // Get all lessons
 router.get('/', (req, res) => {
-  const attemptFetch = (retryCount = 0) => {
-    db.all(
-      'SELECT * FROM lessons ORDER BY order_index ASC',
-      [],
-      (err, rows) => {
-        if (err) {
-          console.error('Error fetching lessons:', err);
-          return res.status(500).json({ error: err.message });
-        }
-        // If no lessons found, wait for seeding (especially important on serverless Vercel)
-        if (!rows || rows.length === 0) {
-          if (retryCount < 8) {
-            console.log(`No lessons found, retrying... (attempt ${retryCount + 1}/8)`);
-            // Wait longer on each retry - seeding can take time on serverless cold starts
-            // Exponential backoff: 1000ms, 2000ms, 3000ms, 4000ms, 5000ms, 6000ms, 7000ms, 8000ms
-            setTimeout(() => {
-              attemptFetch(retryCount + 1);
-            }, 1000 * (retryCount + 1));
-            return;
-          } else {
-            console.log('No lessons found after multiple retries, returning empty array');
-            return res.json([]);
-          }
-        }
-        res.json(rows);
+  db.all(
+    'SELECT * FROM lessons ORDER BY order_index ASC',
+    [],
+    (err, rows) => {
+      if (err) {
+        console.error('Error fetching lessons:', err);
+        return res.status(500).json({ error: err.message });
       }
-    );
-  };
-  
-  attemptFetch();
+      res.json(rows || []);
+    }
+  );
 });
 
 // Get a single lesson by ID
@@ -73,7 +54,7 @@ router.get('/progress/:userId', (req, res) => {
       if (err) {
         return res.status(500).json({ error: err.message });
       }
-      res.json(rows);
+      res.json(rows || []);
     }
   );
 });
@@ -83,7 +64,6 @@ router.post('/:id/complete', (req, res) => {
   const { id } = req.params;
   const { userId = 'default' } = req.body;
   
-  // Check if progress already exists
   db.get(
     'SELECT * FROM user_progress WHERE lesson_id = ? AND user_id = ?',
     [id, userId],
@@ -93,7 +73,6 @@ router.post('/:id/complete', (req, res) => {
       }
       
       if (row) {
-        // Update existing progress
         db.run(
           'UPDATE user_progress SET completed = 1, completed_at = CURRENT_TIMESTAMP WHERE lesson_id = ? AND user_id = ?',
           [id, userId],
@@ -105,7 +84,6 @@ router.post('/:id/complete', (req, res) => {
           }
         );
       } else {
-        // Insert new progress
         db.run(
           'INSERT INTO user_progress (lesson_id, user_id, completed, completed_at) VALUES (?, ?, 1, CURRENT_TIMESTAMP)',
           [id, userId],
@@ -122,4 +100,3 @@ router.post('/:id/complete', (req, res) => {
 });
 
 module.exports = router;
-

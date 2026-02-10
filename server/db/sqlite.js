@@ -1,18 +1,17 @@
 /**
  * SQLite Database Setup
- * Handles database initialization and provides database connection
+ * Uses sql.js (pure JavaScript/WASM) for serverless compatibility
+ * Provides callback-based API matching sqlite3 interface for route compatibility
  */
 
-const sqlite3 = require('sqlite3').verbose();
+const initSqlJs = require('sql.js');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
 // Database file path
-// In Electron, use app user data directory; in serverless use /tmp; otherwise use local db folder
 let DB_PATH;
 if (process.env.ELECTRON_USER_DATA) {
-  // Electron app - use user data directory
   const userDataPath = process.env.ELECTRON_USER_DATA;
   const dbDir = path.join(userDataPath, 'db');
   if (!fs.existsSync(dbDir)) {
@@ -20,118 +19,218 @@ if (process.env.ELECTRON_USER_DATA) {
   }
   DB_PATH = path.join(dbDir, 'excelstarter.db');
 } else if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
-  // Serverless environment (Vercel, AWS Lambda) - use /tmp directory (only writable location)
   const tmpDir = os.tmpdir();
   DB_PATH = path.join(tmpDir, 'excelstarter.db');
   console.log('📦 Serverless environment detected - using /tmp for database');
 } else {
-  // Regular Node.js - use local db folder
   DB_PATH = path.join(__dirname, 'excelstarter.db');
 }
 
-// Create database connection
-const db = new sqlite3.Database(DB_PATH, (err) => {
-  if (err) {
-    console.error('❌ Error opening database:', err.message);
-    console.error('Database path:', DB_PATH);
-  } else {
-    console.log('✅ Connected to SQLite database at:', DB_PATH);
-    // Ensure database directory exists
-    const dbDir = path.dirname(DB_PATH);
-    if (!fs.existsSync(dbDir)) {
-      fs.mkdirSync(dbDir, { recursive: true });
-    }
-    initializeDatabase();
-  }
-});
+// Internal sql.js database instance
+let _db = null;
+let _dbReady = false;
+let _initPromise = null;
 
 /**
- * Initialize database tables
- * Creates all necessary tables for lessons, quizzes, and user progress
+ * Wrapper that mimics the sqlite3 callback API using sql.js
  */
-function initializeDatabase() {
-  // Lessons table - stores lesson content
-  db.run(`
-    CREATE TABLE IF NOT EXISTS lessons (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      title TEXT NOT NULL,
-      content TEXT NOT NULL,
-      order_index INTEGER NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `, (err) => {
-    if (err) {
-      console.error('Error creating lessons table:', err);
-      return;
-    }
-    
-    // User progress table - tracks which lessons users have completed
-    db.run(`
-      CREATE TABLE IF NOT EXISTS user_progress (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        lesson_id INTEGER NOT NULL,
-        user_id TEXT DEFAULT 'default',
-        completed BOOLEAN DEFAULT 0,
-        completed_at DATETIME,
-        FOREIGN KEY (lesson_id) REFERENCES lessons(id)
-      )
-    `, (err) => {
-      if (err) {
-        console.error('Error creating user_progress table:', err);
-        return;
+const db = {
+  /** Run a query that doesn't return rows (INSERT, UPDATE, DELETE, CREATE) */
+  run(sql, params, callback) {
+    if (typeof params === 'function') { callback = params; params = []; }
+    if (!callback) callback = () => {};
+    ensureDb().then((sqlDb) => {
+      try {
+        sqlDb.run(sql, params || []);
+        _saveDb(sqlDb);
+        callback.call({ lastID: 0, changes: sqlDb.getRowsModified() }, null);
+      } catch (err) {
+        callback(err);
       }
-      
-      // Quiz questions table
-      db.run(`
-        CREATE TABLE IF NOT EXISTS quiz_questions (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          lesson_id INTEGER NOT NULL,
-          question TEXT NOT NULL,
-          option_a TEXT NOT NULL,
-          option_b TEXT NOT NULL,
-          option_c TEXT NOT NULL,
-          option_d TEXT NOT NULL,
-          correct_answer TEXT NOT NULL,
-          explanation TEXT,
-          FOREIGN KEY (lesson_id) REFERENCES lessons(id)
-        )
-      `, (err) => {
-        if (err) {
-          console.error('Error creating quiz_questions table:', err);
-          return;
+    }).catch(callback);
+  },
+
+  /** Run a query and return ALL matching rows */
+  all(sql, params, callback) {
+    if (typeof params === 'function') { callback = params; params = []; }
+    if (!callback) callback = () => {};
+    ensureDb().then((sqlDb) => {
+      try {
+        const stmt = sqlDb.prepare(sql);
+        if (params && params.length) stmt.bind(params);
+        const rows = [];
+        while (stmt.step()) {
+          rows.push(stmt.getAsObject());
         }
-        
-        // Quiz results table - stores user quiz scores
-        db.run(`
-          CREATE TABLE IF NOT EXISTS quiz_results (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            lesson_id INTEGER NOT NULL,
-            user_id TEXT DEFAULT 'default',
-            score INTEGER NOT NULL,
-            total_questions INTEGER NOT NULL,
-            completed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (lesson_id) REFERENCES lessons(id)
-          )
-        `, (err) => {
-          if (err) {
-            console.error('Error creating quiz_results table:', err);
-            return;
+        stmt.free();
+        callback(null, rows);
+      } catch (err) {
+        callback(err);
+      }
+    }).catch(callback);
+  },
+
+  /** Run a query and return the FIRST matching row */
+  get(sql, params, callback) {
+    if (typeof params === 'function') { callback = params; params = []; }
+    if (!callback) callback = () => {};
+    ensureDb().then((sqlDb) => {
+      try {
+        const stmt = sqlDb.prepare(sql);
+        if (params && params.length) stmt.bind(params);
+        let row = undefined;
+        if (stmt.step()) {
+          row = stmt.getAsObject();
+        }
+        stmt.free();
+        callback(null, row);
+      } catch (err) {
+        callback(err);
+      }
+    }).catch(callback);
+  },
+
+  /** Prepare a statement - returns object with run() and finalize() */
+  prepare(sql) {
+    const stmtQueue = [];
+    return {
+      run(...args) {
+        const params = args.slice(0, -1);
+        const cb = typeof args[args.length - 1] === 'function' ? args[args.length - 1] : () => {};
+        stmtQueue.push({ params, cb });
+      },
+      finalize(callback) {
+        if (!callback) callback = () => {};
+        ensureDb().then((sqlDb) => {
+          try {
+            for (const item of stmtQueue) {
+              try {
+                sqlDb.run(sql, item.params);
+                item.cb(null);
+              } catch (err) {
+                item.cb(err);
+              }
+            }
+            _saveDb(sqlDb);
+            callback(null);
+          } catch (err) {
+            callback(err);
           }
-          
-          // Insert default lessons if they don't exist
-          // Call immediately - tables are ready at this point
-          insertDefaultLessons();
-          insertDefaultQuizQuestions();
-        });
-      });
-    });
-  });
+        }).catch(callback);
+      }
+    };
+  }
+};
+
+/** Save the in-memory database to disk */
+function _saveDb(sqlDb) {
+  try {
+    const data = sqlDb.export();
+    const buffer = Buffer.from(data);
+    const dir = path.dirname(DB_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(DB_PATH, buffer);
+  } catch (err) {
+    console.error('Error saving database:', err.message);
+  }
+}
+
+/** Ensure the database is initialized (singleton promise) */
+function ensureDb() {
+  if (_dbReady && _db) return Promise.resolve(_db);
+  if (_initPromise) return _initPromise;
+  _initPromise = _initDb();
+  return _initPromise;
+}
+
+/** Initialize the sql.js database */
+async function _initDb() {
+  try {
+    const SQL = await initSqlJs();
+
+    // Try to load existing database from disk
+    if (fs.existsSync(DB_PATH)) {
+      try {
+        const fileBuffer = fs.readFileSync(DB_PATH);
+        _db = new SQL.Database(fileBuffer);
+        console.log('✅ Loaded existing database from:', DB_PATH);
+      } catch (e) {
+        console.log('⚠️ Could not load existing db, creating new one:', e.message);
+        _db = new SQL.Database();
+      }
+    } else {
+      _db = new SQL.Database();
+      console.log('✅ Created new database');
+    }
+
+    _dbReady = true;
+
+    // Initialize tables and seed data synchronously
+    initializeDatabase(_db);
+    _saveDb(_db);
+
+    return _db;
+  } catch (err) {
+    console.error('❌ Failed to initialize sql.js:', err);
+    throw err;
+  }
 }
 
 /**
- * Insert default lessons into the database
+ * Initialize database tables (synchronous with sql.js)
  */
-function insertDefaultLessons() {
+function initializeDatabase(sqlDb) {
+  sqlDb.run(`CREATE TABLE IF NOT EXISTS lessons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    order_index INTEGER NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  sqlDb.run(`CREATE TABLE IF NOT EXISTS user_progress (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lesson_id INTEGER NOT NULL,
+    user_id TEXT DEFAULT 'default',
+    completed BOOLEAN DEFAULT 0,
+    completed_at DATETIME,
+    FOREIGN KEY (lesson_id) REFERENCES lessons(id)
+  )`);
+
+  sqlDb.run(`CREATE TABLE IF NOT EXISTS quiz_questions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lesson_id INTEGER NOT NULL,
+    question TEXT NOT NULL,
+    option_a TEXT NOT NULL,
+    option_b TEXT NOT NULL,
+    option_c TEXT NOT NULL,
+    option_d TEXT NOT NULL,
+    correct_answer TEXT NOT NULL,
+    explanation TEXT,
+    FOREIGN KEY (lesson_id) REFERENCES lessons(id)
+  )`);
+
+  sqlDb.run(`CREATE TABLE IF NOT EXISTS quiz_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lesson_id INTEGER NOT NULL,
+    user_id TEXT DEFAULT 'default',
+    score INTEGER NOT NULL,
+    total_questions INTEGER NOT NULL,
+    completed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (lesson_id) REFERENCES lessons(id)
+  )`);
+
+  console.log('✅ All tables created');
+
+  // Seed data synchronously
+  insertDefaultLessons(sqlDb);
+  insertDefaultQuizQuestions(sqlDb);
+}
+
+/**
+ * Insert default lessons into the database (synchronous with sql.js)
+ */
+function insertDefaultLessons(sqlDb) {
   const lessons = [
     {
       title: 'What is Excel?',
@@ -1530,89 +1629,45 @@ Remember: It takes seconds to save, but hours to recreate lost work. Make saving
     }
   ];
 
-  // Check if lessons already exist
-  db.get('SELECT COUNT(*) as count FROM lessons', (err, row) => {
-    if (err) {
-      console.error('Error checking lessons:', err);
-      // If table doesn't exist yet, wait a bit and try again
-      setTimeout(() => insertDefaultLessons(), 500);
-      return;
-    }
-    
-    if (row && row.count === 0) {
-      // Insert new lessons
-      const stmt = db.prepare('INSERT INTO lessons (title, content, order_index) VALUES (?, ?, ?)');
-      lessons.forEach((lesson, index) => {
-        stmt.run(lesson.title, lesson.content, lesson.order_index, (err) => {
-          if (err) {
-            console.error(`Error inserting lesson ${index + 1}:`, err);
-          }
-        });
-      });
-      stmt.finalize((err) => {
-        if (err) {
-          console.error('Error finalizing lesson insert:', err);
-        } else {
-          console.log(`✅ Default lessons inserted (${lessons.length} lessons)`);
-        }
-      });
-    } else if (row) {
-      // Update existing lessons and insert new ones
-      console.log(`📝 Updating existing lessons with latest content (${row.count} lessons found)...`);
-      
-      const updateStmt = db.prepare('UPDATE lessons SET title = ?, content = ? WHERE order_index = ?');
-      const insertStmt = db.prepare('INSERT INTO lessons (title, content, order_index) VALUES (?, ?, ?)');
-      let processCount = 0;
-      const totalLessons = lessons.length;
-      
+  // Synchronous insert/update with sql.js
+  try {
+    const stmt = sqlDb.prepare('SELECT COUNT(*) as count FROM lessons');
+    stmt.step();
+    const count = stmt.getAsObject().count;
+    stmt.free();
+
+    if (count === 0) {
       lessons.forEach((lesson) => {
-        // Check if lesson with this order_index exists
-        db.get('SELECT id FROM lessons WHERE order_index = ?', [lesson.order_index], (err, existingLesson) => {
-          if (err) {
-            console.error(`Error checking lesson order_index ${lesson.order_index}:`, err);
-            processCount++;
-            if (processCount === totalLessons) {
-              updateStmt.finalize();
-              insertStmt.finalize();
-            }
-          } else if (existingLesson) {
-            // Update existing lesson
-            updateStmt.run(lesson.title, lesson.content, lesson.order_index, (err) => {
-              if (err) {
-                console.error(`Error updating lesson order_index ${lesson.order_index}:`, err);
-              }
-              processCount++;
-              if (processCount === totalLessons) {
-                console.log(`✅ All lessons processed (updated existing and inserted new)`);
-                updateStmt.finalize();
-                insertStmt.finalize();
-              }
-            });
-          } else {
-            // Insert new lesson
-            insertStmt.run(lesson.title, lesson.content, lesson.order_index, (err) => {
-              if (err) {
-                console.error(`Error inserting lesson order_index ${lesson.order_index}:`, err);
-              }
-              processCount++;
-              if (processCount === totalLessons) {
-                console.log(`✅ All lessons processed (updated existing and inserted new)`);
-                updateStmt.finalize();
-                insertStmt.finalize();
-              }
-            });
-          }
-        });
+        sqlDb.run('INSERT INTO lessons (title, content, order_index) VALUES (?, ?, ?)',
+          [lesson.title, lesson.content, lesson.order_index]);
       });
+      console.log(`✅ Default lessons inserted (${lessons.length} lessons)`);
+    } else {
+      // Update existing, insert new
+      lessons.forEach((lesson) => {
+        const check = sqlDb.prepare('SELECT id FROM lessons WHERE order_index = ?');
+        check.bind([lesson.order_index]);
+        if (check.step()) {
+          sqlDb.run('UPDATE lessons SET title = ?, content = ? WHERE order_index = ?',
+            [lesson.title, lesson.content, lesson.order_index]);
+        } else {
+          sqlDb.run('INSERT INTO lessons (title, content, order_index) VALUES (?, ?, ?)',
+            [lesson.title, lesson.content, lesson.order_index]);
+        }
+        check.free();
+      });
+      console.log(`✅ All lessons processed (${lessons.length} lessons)`);
     }
-  });
+  } catch (err) {
+    console.error('Error inserting lessons:', err.message);
+  }
 }
 
 /**
- * Insert default quiz questions
+ * Insert default quiz questions (synchronous with sql.js)
  * Each lesson now has 5+ questions for comprehensive testing
  */
-function insertDefaultQuizQuestions() {
+function insertDefaultQuizQuestions(sqlDb) {
   const questions = [
     // Lesson 1: What is Excel? (5 questions)
     { lesson_id: 1, question: 'What is Excel primarily used for?', option_a: 'Playing games', option_b: 'Organizing and analyzing data', option_c: 'Sending emails', option_d: 'Browsing the internet', correct_answer: 'B', explanation: 'Excel is a spreadsheet program designed to organize, calculate, and analyze data.' },
@@ -1699,68 +1754,32 @@ function insertDefaultQuizQuestions() {
     { lesson_id: 12, question: 'What is the BEST habit for file safety?', option_a: 'Save once when finished', option_b: 'Save frequently and keep backups', option_c: 'Never save - rely on auto-recovery', option_d: 'Only save to USB drives', correct_answer: 'B', explanation: 'Save early and often! Keep backups in multiple locations (cloud + local) for important files.' }
   ];
 
-  db.get('SELECT COUNT(*) as count FROM quiz_questions', (err, row) => {
-    if (err) {
-      console.error('Error checking quiz questions:', err);
-      // If table doesn't exist yet, wait a bit and try again
-      setTimeout(() => insertDefaultQuizQuestions(), 500);
-      return;
+  try {
+    const stmt = sqlDb.prepare('SELECT COUNT(*) as count FROM quiz_questions');
+    stmt.step();
+    const count = stmt.getAsObject().count;
+    stmt.free();
+
+    if (count === 0 || count < questions.length) {
+      if (count > 0) {
+        sqlDb.run('DELETE FROM quiz_questions');
+        console.log(`📝 Clearing old quiz questions (${count})...`);
+      }
+      questions.forEach((q) => {
+        sqlDb.run(
+          'INSERT INTO quiz_questions (lesson_id, question, option_a, option_b, option_c, option_d, correct_answer, explanation) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          [q.lesson_id, q.question, q.option_a, q.option_b, q.option_c, q.option_d, q.correct_answer, q.explanation]
+        );
+      });
+      console.log(`✅ Quiz questions inserted (${questions.length} questions)`);
+    } else {
+      console.log(`✅ Quiz questions already exist (${count} questions)`);
     }
-    
-    if (row && row.count === 0) {
-      const stmt = db.prepare(`
-        INSERT INTO quiz_questions 
-        (lesson_id, question, option_a, option_b, option_c, option_d, correct_answer, explanation) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      questions.forEach((q, index) => {
-        stmt.run(q.lesson_id, q.question, q.option_a, q.option_b, q.option_c, q.option_d, q.correct_answer, q.explanation, (err) => {
-          if (err) {
-            console.error(`Error inserting question ${index + 1}:`, err);
-          }
-        });
-      });
-      stmt.finalize((err) => {
-        if (err) {
-          console.error('Error finalizing quiz question insert:', err);
-        } else {
-          console.log(`✅ Default quiz questions inserted (${questions.length} questions)`);
-        }
-      });
-    } else if (row && row.count < questions.length) {
-      // More questions available than in DB - clear and re-insert
-      console.log(`📝 Updating quiz questions (${row.count} -> ${questions.length})...`);
-      db.run('DELETE FROM quiz_questions', (err) => {
-        if (err) {
-          console.error('Error clearing quiz questions:', err);
-          return;
-        }
-        const stmt = db.prepare(`
-          INSERT INTO quiz_questions 
-          (lesson_id, question, option_a, option_b, option_c, option_d, correct_answer, explanation) 
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `);
-        questions.forEach((q, index) => {
-          stmt.run(q.lesson_id, q.question, q.option_a, q.option_b, q.option_c, q.option_d, q.correct_answer, q.explanation, (err) => {
-            if (err) {
-              console.error(`Error inserting question ${index + 1}:`, err);
-            }
-          });
-        });
-        stmt.finalize((err) => {
-          if (err) {
-            console.error('Error finalizing quiz question insert:', err);
-          } else {
-            console.log(`✅ Quiz questions updated (${questions.length} questions)`);
-          }
-        });
-      });
-    } else if (row) {
-      console.log(`✅ Quiz questions already exist (${row.count} questions)`);
-    }
-  });
+  } catch (err) {
+    console.error('Error inserting quiz questions:', err.message);
+  }
 }
 
-// Export database connection
+// Export the callback-compatible wrapper
 module.exports = db;
 
