@@ -10,7 +10,7 @@ import MatchingGame from './MatchingGame';
 import FormulaChallenge from './FormulaChallenge';
 
 const InteractiveChallenge = ({ lessonOrderIndex, onXpEarned = () => {} }) => {
-  const [completedChallenges, setCompletedChallenges] = useState(0);
+  const [, setCompletedChallenges] = useState(0);
   const [totalXpEarned, setTotalXpEarned] = useState(0);
 
   const handleChallengeComplete = (xp = 10) => {

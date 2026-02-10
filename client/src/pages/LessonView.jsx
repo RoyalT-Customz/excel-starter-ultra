@@ -95,8 +95,7 @@ const LessonView = () => {
     let currentParagraph = [];
     let listItems = [];
     let inList = false;
-    let subListItems = [];
-    let inSubList = false;
+    // Sub-list tracking (reserved for future nested list support)
 
     const processParagraph = () => {
       if (currentParagraph.length > 0) {
