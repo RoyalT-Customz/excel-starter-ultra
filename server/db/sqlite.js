@@ -1071,14 +1071,13 @@ Your data should be organized like this:
 - Consistent data format (dates as dates, numbers as numbers)
 
 **Example Data Setup:**
-```
-Product    | Date       | Sales | Region
------------|------------|-------|----------
-Widget A   | 1/1/2024   | 100   | North
-Widget B   | 1/1/2024   | 150   | South
-Widget A   | 1/2/2024   | 120   | North
-Widget B   | 1/2/2024   | 180   | South
-```
+
+Product    | Date       | Sales  | Region
+-----------|------------|--------|----------
+Widget A   | 1/1/2024   | 100    | North
+Widget B   | 1/1/2024   | 150    | South
+Widget A   | 1/2/2024   | 120    | North
+Widget B   | 1/2/2024   | 180    | South
 
 **Step 2: Select Your Data**
 
