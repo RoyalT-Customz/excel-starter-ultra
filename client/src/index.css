@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #0f0f0f;
+  color: #e0e0e0;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* Custom scrollbar for sleek dark design */
+::-webkit-scrollbar {
+  width: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1a1a1a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #FFB6C1;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #FF91A4;
+}
+
+/* Selection color */
+::selection {
+  background-color: rgba(255, 182, 193, 0.3);
+  color: #fff;
+}
+
+/* Smooth transitions for all interactive elements */
+* {
+  transition-property: background-color, border-color, color, box-shadow;
+  transition-duration: 150ms;
+  transition-timing-function: ease-in-out;
+}
+
+/* Glow animation for interactive elements */
+@keyframes pulse-pink {
+  0%, 100% { box-shadow: 0 0 5px rgba(255, 182, 193, 0.2); }
+  50% { box-shadow: 0 0 20px rgba(255, 182, 193, 0.4); }
+}
+
+.glow-pink {
+  animation: pulse-pink 2s ease-in-out infinite;
+}
+
+/* XP bar animation */
+@keyframes fill-xp {
+  from { width: 0%; }
+}
+
+.animate-fill-xp {
+  animation: fill-xp 1s ease-out;
+}
+
+/* Confetti burst keyframes */
+@keyframes confetti-fall {
+  0% { transform: translateY(-100vh) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
+}

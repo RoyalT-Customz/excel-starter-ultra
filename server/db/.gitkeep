@@ -1,0 +1,4 @@
+# This directory stores the SQLite database file
+# The database file (excelstarter.db) will be created automatically
+# It contains all user progress and should be backed up regularly
+

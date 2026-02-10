@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+client/node_modules/
+server/node_modules/
+
+# Environment variables
+.env
+server/.env
+
+# Database (but keep the directory structure)
+*.db
+*.sqlite
+*.sqlite3
+# Note: server/db/excelstarter.db contains user progress - don't commit it but keep it locally
+server/db/*.db
+!server/db/.gitkeep
+
+# Uploads
+server/uploads/
+uploads/
+
+# Build files
+client/build/
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+.vercel
