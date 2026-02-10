@@ -14,9 +14,14 @@ const aiCoach = require('../controllers/aiCoach');
 const fileAnalyzer = require('../controllers/fileAnalyzer');
 const practiceGenerator = require('../controllers/practiceGenerator');
 
-// Configure multer for file uploads
+// Configure multer for file uploads (use /tmp in serverless)
+const os = require('os');
+const isServerless = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME;
+const uploadDest = isServerless ? path.join(os.tmpdir(), 'uploads') : path.join(__dirname, '..', 'uploads');
+try { if (!fs.existsSync(uploadDest)) fs.mkdirSync(uploadDest, { recursive: true }); } catch(e) {}
+
 const upload = multer({
-  dest: 'uploads/',
+  dest: uploadDest,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
   fileFilter: (req, file, cb) => {
     const allowedTypes = ['.xlsx', '.xls'];
