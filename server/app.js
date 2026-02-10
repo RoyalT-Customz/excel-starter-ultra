@@ -12,11 +12,16 @@ require('dotenv').config();
 // Initialize database (this will create tables if they don't exist)
 require('./db/sqlite');
 
-// Ensure uploads directory exists
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-  console.log('✅ Created uploads directory');
+// Ensure uploads directory exists (use /tmp in serverless environments)
+const isServerlessEnv = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME;
+const uploadsDir = isServerlessEnv ? path.join(require('os').tmpdir(), 'uploads') : path.join(__dirname, 'uploads');
+try {
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    console.log('✅ Created uploads directory at:', uploadsDir);
+  }
+} catch (err) {
+  console.warn('⚠️ Could not create uploads directory:', err.message);
 }
 
 
