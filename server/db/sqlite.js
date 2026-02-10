@@ -1002,7 +1002,7 @@ Functions are pre-built calculations:
 
 - **F2:** Edit formula in current cell
 - **Esc:** Cancel editing (don't save changes)
-- **Ctrl + `** (backtick): Show all formulas instead of results
+- **Ctrl + \`** (backtick): Show all formulas instead of results
 - **Ctrl + Enter:** Enter formula in multiple selected cells
 
 **Practice Exercises:**
